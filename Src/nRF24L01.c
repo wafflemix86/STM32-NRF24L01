@@ -2,7 +2,7 @@
 #include "string.h"
 #include "stdlib.h"
 #include "stm32l0xx_hal_rcc.h"
-
+// hello test test
 uint8_t pipe0_reading_address[5] = "12345";
 const uint8_t child_pipe[6] = {RX_ADDR_P0, RX_ADDR_P1, RX_ADDR_P2, RX_ADDR_P3, RX_ADDR_P4, RX_ADDR_P5};
 const uint8_t child_pipe_enable[6] = {ERX_P0, ERX_P1, ERX_P2, ERX_P3, ERX_P4, ERX_P5};
