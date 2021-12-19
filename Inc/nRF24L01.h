@@ -112,7 +112,7 @@
 #define RF_PWR_HIGH 0x03
 
 #define NRF_SUCCESS 0
-#define NRF_SUCCESS 1
+#define NRF_ERROR   1
 
 
 typedef struct nRF_Handle
@@ -157,6 +157,7 @@ void nRF_StopListening(nRF_Handle_t* );
 void nRF_SetPALevel(nRF_Handle_t* , uint8_t );
 uint8_t nRF_DataAvailable(nRF_Handle_t* );
 void nRF_ReadData(nRF_Handle_t* , uint8_t* , uint8_t );
-void nRF_WriteData(nRF_Handle_t* , uint8_t* , uint8_t );
+uint8_t nRF_WriteData(nRF_Handle_t* , uint8_t* , uint8_t );
+
 // test test hello 123
 #endif

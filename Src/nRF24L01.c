@@ -4,6 +4,7 @@
 #include "stm32l0xx_hal_rcc.h"
 // hello test test
 uint8_t pipe0_reading_address[5] = "12345";
+uint8_t tempRxBuffer[33] = {0};
 const uint8_t child_pipe[6] = {RX_ADDR_P0, RX_ADDR_P1, RX_ADDR_P2, RX_ADDR_P3, RX_ADDR_P4, RX_ADDR_P5};
 const uint8_t child_pipe_enable[6] = {ERX_P0, ERX_P1, ERX_P2, ERX_P3, ERX_P4, ERX_P5};
 uint16_t txDelay = 0;
@@ -77,12 +78,14 @@ uint8_t ReadRegister(nRF_Handle_t* handle, uint8_t reg)
 void ReadRegisterBytes(nRF_Handle_t* handle, uint8_t reg, uint8_t* rxdata, uint8_t len)
 {
   uint8_t* txdata = malloc((len+1)*sizeof(uint8_t));
+  
   txdata[0] = (reg | R_REGISTER);
   memset(&txdata[1], RF24_NOP, len*sizeof(uint8_t));
   memset(rxdata, 0x00, len*sizeof(uint8_t));
   HAL_GPIO_WritePin(handle->CSN_Port, handle->CSN_Pin, GPIO_PIN_RESET);
-  HAL_SPI_TransmitReceive(handle->spihandle, txdata, rxdata, (len+1)*sizeof(uint8_t), 2000);
+  HAL_SPI_TransmitReceive(handle->spihandle, txdata, tempRxBuffer, (len+1)*sizeof(uint8_t), 2000);
   HAL_GPIO_WritePin(handle->CSN_Port, handle->CSN_Pin, GPIO_PIN_SET);
+  memcpy(rxdata, tempRxBuffer + 1, len*sizeof(uint8_t));
   free(txdata);
 }
 
@@ -227,6 +230,9 @@ void nRF_OpenWritingPipe(nRF_Handle_t* handle, uint8_t* address)
 
 void nRF_StartListening(nRF_Handle_t* handle)
 {
+  
+  // set chip enable 
+  HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_SET);
   // clear interrupt bits
   WriteRegister(handle, NRF_STATUS, (1<<RX_DR)|(1<<TX_DS)|(1<<MAX_RT));
   // set receive mode bit 
@@ -279,18 +285,24 @@ uint8_t nRF_DataAvailable(nRF_Handle_t* handle)
   else return 0;
 }
 
-void nRF_WriteData(nRF_Handle_t* handle, uint8_t* data, uint8_t len)
+uint8_t nRF_WriteData(nRF_Handle_t* handle, uint8_t* data, uint8_t len)
 {
+  uint8_t stat = 0;
   WriteRegisterBytes(handle, W_TX_PAYLOAD, data, len);
   HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_SET);
   Delay15Us();
   // wait until tx data sent flag is set or max number of retreies reached
-  while(!(ReadRegister(handle, NRF_STATUS) & ((1 << TX_DS)|(1 << MAX_RT)))) 
-  {
-  }
+  do { stat = ReadRegister(handle, NRF_STATUS); }
+  while(!(stat & ((1 << TX_DS)|(1 << MAX_RT))));
   HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_RESET);
   Delay15Us();
   WriteRegister(handle,NRF_STATUS, ReadRegister(handle, NRF_STATUS) | (1 << TX_DS) | (1 << MAX_RT));
+  // return send failure if max retry reached
+  if(stat & (1 << MAX_RT))
+  {
+    return NRF_ERROR;
+  }
+  else return NRF_SUCCESS;
 }
      
 void nRF_ReadData(nRF_Handle_t* handle, uint8_t* rxbuff, uint8_t len)
