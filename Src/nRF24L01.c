@@ -2,12 +2,23 @@
 #include "string.h"
 #include "stdlib.h"
 #include "stm32l0xx_hal_rcc.h"
-// hello test test
+//#include "stdio.h"
+
 uint8_t pipe0_reading_address[5] = "12345";
 uint8_t tempRxBuffer[33] = {0};
 const uint8_t child_pipe[6] = {RX_ADDR_P0, RX_ADDR_P1, RX_ADDR_P2, RX_ADDR_P3, RX_ADDR_P4, RX_ADDR_P5};
 const uint8_t child_pipe_enable[6] = {ERX_P0, ERX_P1, ERX_P2, ERX_P3, ERX_P4, ERX_P5};
 uint16_t txDelay = 0;
+
+uint8_t nRF_GetStatus()
+{
+  uint8_t result[2] = {0};
+  uint8_t msg[2] = { (RF24_NOP | W_REGISTER), RF24_NOP };
+  HAL_GPIO_WritePin(nRFHandle.CSN_Port, nRFHandle.CSN_Pin, GPIO_PIN_RESET);
+  HAL_SPI_TransmitReceive(nRFHandle.spihandle, msg, result, 1, 2000);
+  HAL_GPIO_WritePin(nRFHandle.CSN_Port, nRFHandle.CSN_Pin, GPIO_PIN_SET);
+  return result[0];
+}
 
 // this is ABSOLUTELY only an approximation. not 100% accurate
 void DelayUs(uint32_t n_us)
@@ -115,25 +126,26 @@ uint8_t nRF_Startup(nRF_Handle_t* handle)
   // make sure handle has valid pointers
   if(VerifyHandle(handle)) return 1;
   
-  HAL_Delay(5);
-  regval = ReadRegister(handle, NRF_CONFIG);
-  WriteRegister(handle, NRF_CONFIG, regval & ~(1 << PWR_UP));
-  HAL_Delay(10);
-  
+  HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin,0);
+  HAL_GPIO_WritePin(handle->CSN_Port, handle->CSN_Pin, 1);
+  HAL_Delay(200);
   // set up 5 retries with 1500us delay between
   regval = (5 << 4) | (5);
   WriteRegister(handle, SETUP_RETR, regval);
   
-  // set data rate to 1mbps
+  // set RF Data Rate to 1Mbps and set the according txDelay
   regval = ReadRegister(handle, RF_SETUP);
-  regval &= ~((1 << 5) | (1 << 3));
-  WriteRegister(handle, RF_SETUP, regval);
-  txDelay = 280;
-  if(ReadRegister(handle, RF_SETUP) != regval) return 1;
+  regval &= ~((1 << RF_DR_LOW)|(RF_DR_HIGH));
+  if(HAL_RCC_GetSysClockFreq() >= 20000000)
+  {
+    txDelay = 280;
+  }
+  else txDelay = 85;
+  WriteRegister(handle,RF_SETUP, regval);
   
   // check special register pertainant to old hardware variant
   uint8_t before_toggle = ReadRegister(handle, FEATURE);
-  WriteCommand(handle, ACTIVATE);
+  //WriteCommand(handle, ACTIVATE);
   WriteCommand(handle, 0x73);
   regval = ReadRegister(handle, FEATURE);
   if(regval)
@@ -141,10 +153,10 @@ uint8_t nRF_Startup(nRF_Handle_t* handle)
     if(regval == before_toggle)
     {
       // module did not experience power-on-reset (#401) idk wtf 0x73 is about but in the other libraries it fixes things
-      WriteCommand(handle, ACTIVATE);
+      //WriteCommand(handle, ACTIVATE);
       WriteCommand(handle, 0x73);
     }
-    WriteRegister(handle, FEATURE, 0);
+    // WriteRegister(handle, FEATURE, 0);
   }
   
   // disable dynamic payload
@@ -178,19 +190,19 @@ uint8_t nRF_Startup(nRF_Handle_t* handle)
   WriteCommand(handle, FLUSH_TX);
   
   // set config to reflect all isr on isr pin, enable ptx, power up, 16 bit crc
-  regval = (1 << EN_CRC) | (1 << CRCO) | (1 << MASK_TX_DS) | (1 << MASK_MAX_RT);
-  WriteRegister(handle, NRF_CONFIG, regval);
-  
-  // set power up bit 
-  regval |= 1 << PWR_UP;
-  WriteRegister(handle, NRF_CONFIG, regval);
+  WriteRegister(handle, NRF_CONFIG, (1 << EN_CRC) | (1 << CRCO) | (1 << MASK_TX_DS) | (1 << MASK_MAX_RT));
+  uint8_t config_reg = ReadRegister(handle,NRF_CONFIG);
+  if(!(config_reg & (1<<PWR_UP)))
+  {
+    config_reg |= (1 << PWR_UP);
+    WriteRegister(handle,NRF_CONFIG,config_reg);
+  }
   
   // delay 5 ms after power up
   HAL_Delay(5);
   
   // verify config register is properly set
-  regval = ReadRegister(handle, NRF_CONFIG);
-  if(regval == (1 << EN_CRC) | (1 << CRCO) | (1 << PWR_UP)) return 0;
+  if(config_reg == ((1 << EN_CRC) | (1 << CRCO) | (1 << PWR_UP)| (1 << MASK_MAX_RT)| (1 << MASK_TX_DS))) return 0;
   else return 1;
 }
 
@@ -230,16 +242,13 @@ void nRF_OpenWritingPipe(nRF_Handle_t* handle, uint8_t* address)
 
 void nRF_StartListening(nRF_Handle_t* handle)
 {
-  
-  // set chip enable 
-  HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_SET);
-  // clear interrupt bits
-  WriteRegister(handle, NRF_STATUS, (1<<RX_DR)|(1<<TX_DS)|(1<<MAX_RT));
   // set receive mode bit 
-  uint8_t regval = ReadRegister(handle, NRF_CONFIG);
-  WriteRegister(handle, NRF_CONFIG, regval | (1 << PRIM_RX));
-  
-  // restore pipe 0 address
+  WriteRegister(handle, NRF_CONFIG, ReadRegister(handle, NRF_CONFIG) | (1 << PRIM_RX));
+  // clear rx and tx interrupts
+  WriteRegister(handle, NRF_STATUS, ReadRegister(handle, NRF_STATUS)|(1<<RX_DR)|(1<<TX_DS)|(1<<MAX_RT));
+  // set chip enable high
+  HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_SET);
+  // restore pipe 0 address if it already exists
   if(pipe0_reading_address[0] > 0)
   {
     WriteRegisterBytes(handle, RX_ADDR_P0, pipe0_reading_address, 5);
@@ -249,24 +258,17 @@ void nRF_StartListening(nRF_Handle_t* handle)
     nRF_CloseReadingPipe(handle, 0);
   }
   
-  // set chip enable 
-  HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_SET);
-  DelayUs(130);
-  
+  // wait at least 130us with CE high
   
 }
 
 void nRF_StopListening(nRF_Handle_t* handle)
 {
   HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_RESET );
-  HAL_Delay(1);
-  WriteCommand(handle, FLUSH_TX);
-  uint8_t regval = ReadRegister(handle, NRF_CONFIG);
-  regval &= ~(1 << PRIM_RX);
-  WriteRegister(handle, NRF_CONFIG, regval);
-  regval = ReadRegister(handle, EN_RXADDR);
-  regval |= (1 << child_pipe_enable[0]);
-  WriteRegister(handle, EN_RXADDR, regval);
+  DelayUs(txDelay + 50);
+  //WriteCommand(handle, FLUSH_TX);
+  WriteRegister(handle, NRF_CONFIG, ReadRegister(handle, NRF_CONFIG) & ~(1 << PRIM_RX));
+  WriteRegister(handle, EN_RXADDR, ReadRegister(handle, EN_RXADDR)|(1 << child_pipe_enable[0]));
 }
      
 void nRF_SetPALevel(nRF_Handle_t* handle, uint8_t level)
@@ -279,30 +281,41 @@ void nRF_SetPALevel(nRF_Handle_t* handle, uint8_t level)
 // returns 1 if data available and 0 otherwise
 uint8_t nRF_DataAvailable(nRF_Handle_t* handle)
 {
-  uint8_t fifoReady = ReadRegister(handle, FIFO_STATUS) & (1 << RX_FULL);
-  uint8_t status = (GetStatus(handle) >> RX_P_NO) && 0x07;
-  if( status <= 5 && fifoReady) return 1;
-  else return 0;
+  uint8_t status = ((nRF_GetStatus() >> RX_P_NO) & 0x07);
+  if( status > 5) { return 0; }
+  else { return 1; }
 }
 
 uint8_t nRF_WriteData(nRF_Handle_t* handle, uint8_t* data, uint8_t len)
 {
   uint8_t stat = 0;
+  
+  // fill tx fifo register with data
   WriteRegisterBytes(handle, W_TX_PAYLOAD, data, len);
+  // pulse CE high for at least 10us
   HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_SET);
-  Delay15Us();
   // wait until tx data sent flag is set or max number of retreies reached
-  do { stat = ReadRegister(handle, NRF_STATUS); }
+  do 
+  {
+    stat = nRF_GetStatus();
+    HAL_Delay(1);
+  }
   while(!(stat & ((1 << TX_DS)|(1 << MAX_RT))));
+  // set CE pin low
   HAL_GPIO_WritePin(handle->CE_Port, handle->CE_Pin, GPIO_PIN_RESET);
-  Delay15Us();
-  WriteRegister(handle,NRF_STATUS, ReadRegister(handle, NRF_STATUS) | (1 << TX_DS) | (1 << MAX_RT));
+  // clear interrupt flags
+  WriteRegister(handle,NRF_STATUS, (1 << RX_DR)|(1 << TX_DS)|(1 << MAX_RT));
+  
   // return send failure if max retry reached
   if(stat & (1 << MAX_RT))
   {
+    WriteCommand(handle, FLUSH_TX);
     return NRF_ERROR;
   }
-  else return NRF_SUCCESS;
+  else 
+  {
+    return NRF_SUCCESS;
+  }
 }
      
 void nRF_ReadData(nRF_Handle_t* handle, uint8_t* rxbuff, uint8_t len)
@@ -311,3 +324,17 @@ void nRF_ReadData(nRF_Handle_t* handle, uint8_t* rxbuff, uint8_t len)
   // clear data rx interrupt flag
   WriteRegister(handle, NRF_STATUS, ReadRegister(handle,NRF_STATUS) | (1 << RX_DR));
 }
+
+void nRF_SwitchToRx(nRF_Handle_t* handle)
+{
+  nRF_OpenReadingPipe(handle,1,nRFHandle.address,5);
+  nRF_StartListening(handle);
+}
+
+void nRF_SwitchToTx(nRF_Handle_t* handle)
+{
+  nRF_StopListening(handle);
+  nRF_OpenWritingPipe(handle,nRFHandle.address);
+  
+}
+
